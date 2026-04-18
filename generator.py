@@ -9,20 +9,34 @@ class Generator(nn.Module):
         channels=[512, 256, 128, 64],
         out_channels=3,
         use_batchnorm=True,
-        activation="relu"
+        activation="relu",
+        dropout=0.0,
     ):
         super().__init__()
 
         layers = []
 
         def get_activation():
-            return nn.ReLU(True) if activation == "relu" else nn.LeakyReLU(0.2, True)
+            act = str(activation).lower()
+            if act == "relu":
+                return nn.ReLU(True)
+            if act in {"leakyrelu", "leaky_relu", "leaky"}:
+                return nn.LeakyReLU(0.2, True)
+            if act == "elu":
+                return nn.ELU(inplace=True)
+            if act == "gelu":
+                return nn.GELU()
+            if act in {"silu", "swish"}:
+                return nn.SiLU(inplace=True)
+            raise ValueError(f"Unsupported generator activation: {activation}")
 
         # First layer (no stride)
         layers.append(nn.ConvTranspose2d(latent_dim, channels[0], 4, 1, 0))
         if use_batchnorm:
             layers.append(nn.BatchNorm2d(channels[0]))
         layers.append(get_activation())
+        if dropout and dropout > 0:
+            layers.append(nn.Dropout2d(dropout))
 
         # Hidden layers
         in_ch = channels[0]
@@ -31,6 +45,8 @@ class Generator(nn.Module):
             if use_batchnorm:
                 layers.append(nn.BatchNorm2d(ch))
             layers.append(get_activation())
+            if dropout and dropout > 0:
+                layers.append(nn.Dropout2d(dropout))
             in_ch = ch
 
         # Output layer
