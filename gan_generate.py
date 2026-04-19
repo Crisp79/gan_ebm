@@ -1,6 +1,7 @@
 import torch
 import random
 import numpy as np
+import gc
 from torchvision.utils import make_grid, save_image
 import matplotlib.pyplot as plt
 from torchmetrics.image.fid import FrechetInceptionDistance
@@ -42,6 +43,14 @@ def save_samples(generator, device, path, latent_dim=128):
     save_image(samples, path, nrow=4, normalize=True)
 
 
+def clear_eval_memory():
+    """Clear Python/CUDA memory after metric-heavy evaluation."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+
+
 def compute_fid(generator, dataloader, device, latent_dim, num_batches=10):
     fid = FrechetInceptionDistance(feature=2048).to(device)
 
@@ -66,7 +75,10 @@ def compute_fid(generator, dataloader, device, latent_dim, num_batches=10):
 
             fid.update(fake_imgs_uint8, real=False)
 
-    return fid.compute().item()
+    score = fid.compute().item()
+    del fid
+    clear_eval_memory()
+    return score
 
 
 def compute_is(generator, device, latent_dim, n_samples=500):
@@ -84,4 +96,6 @@ def compute_is(generator, device, latent_dim, n_samples=500):
             inception.update(fake_imgs_uint8)
 
     score, _ = inception.compute()
+    del inception
+    clear_eval_memory()
     return score.item()

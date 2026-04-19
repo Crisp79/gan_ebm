@@ -59,6 +59,10 @@ def train_gan_with_epoch_callback(
     gp_lambda=10.0,
     epoch_callback=None,
     discriminator=None,
+    start_epoch=0,
+    opt_G_state_dict=None,
+    opt_E_state_dict=None,
+    return_optimizer_states=False,
 ):
     """Train EBM-style GAN and invoke callback after each epoch with latest losses.
 
@@ -80,11 +84,18 @@ def train_gan_with_epoch_callback(
     opt_G = torch.optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
     opt_E = torch.optim.Adam(energy_net.parameters(), lr=lr, betas=(0.5, 0.999))
 
+    if opt_G_state_dict is not None:
+        opt_G.load_state_dict(opt_G_state_dict)
+    if opt_E_state_dict is not None:
+        opt_E.load_state_dict(opt_E_state_dict)
+
     G_losses = []
     E_losses = []
 
-    for epoch in range(epochs):
-        loop = tqdm(dataloader, desc=f"Epoch [{epoch+1}/{epochs}]")
+    total_epochs = start_epoch + epochs
+
+    for epoch in range(start_epoch, total_epochs):
+        loop = tqdm(dataloader, desc=f"Epoch [{epoch+1}/{total_epochs}]")
 
         for real_imgs, _ in loop:
             real_imgs = real_imgs.to(device)
@@ -140,6 +151,8 @@ def train_gan_with_epoch_callback(
                     energy_net=energy_net,
                     g_loss=g_loss_epoch,
                     e_loss=e_loss_epoch,
+                    opt_G_state_dict=opt_G.state_dict(),
+                    opt_E_state_dict=opt_E.state_dict(),
                 )
             except TypeError:
                 # Backward compatibility with old discriminator callback signatures.
@@ -150,6 +163,9 @@ def train_gan_with_epoch_callback(
                     g_loss=g_loss_epoch,
                     d_loss=e_loss_epoch,
                 )
+
+    if return_optimizer_states:
+        return G_losses, E_losses, opt_G.state_dict(), opt_E.state_dict()
 
     return G_losses, E_losses
 
