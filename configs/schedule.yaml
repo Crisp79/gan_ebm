@@ -1,0 +1,8 @@
+eval_every: 5
+save_and_sample_every: 15
+checkpoint_dir: models/ebgan_checkpoints
+sample_dir: models/ebgan_samples
+sample_count: 16
+fixed_noise_seed: 42
+cleanup_after_non_training_sampling: true
+unload_models_on_finish: false

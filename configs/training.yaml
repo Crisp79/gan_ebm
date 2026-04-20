@@ -1,0 +1,19 @@
+epochs: 25
+latent_dim: 128
+lr_g: 0.0002
+lr_d: 0.0002
+betas: [0.5, 0.999]
+generator_steps: 1
+discriminator_steps: 1
+real_ratio_for_discriminator: 0.5
+generator_activation: leaky_relu
+discriminator_activation: leaky_relu
+generator_dropout: 0.0
+discriminator_dropout: 0.0
+generator_norm: batchnorm
+discriminator_norm: spectral
+margin: 20.0
+pulling_away_weight: 0.1
+discriminator_embedding_channels: 512
+compute_fid_every: 0
+fid_num_samples: 32
