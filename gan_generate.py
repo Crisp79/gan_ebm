@@ -19,11 +19,11 @@ def set_seed(seed=42):
     torch.backends.cudnn.benchmark = False
 
 
-def generate_samples(generator, device, latent_dim=128, n_samples=16):
+def generate_samples(generator, device, latent_dim=128, n_samples=16, fixed_noise=None):
     generator.eval()
 
     with torch.no_grad():
-        z = torch.randn(n_samples, latent_dim, 1, 1).to(device)
+        z = fixed_noise.to(device) if fixed_noise is not None else torch.randn(n_samples, latent_dim, 1, 1).to(device)
         samples = generator(z)
 
     return samples
@@ -38,8 +38,9 @@ def show_images(images, title="Images"):
     plt.show()
 
 
-def save_samples(generator, device, path, latent_dim=128):
-    samples = generate_samples(generator, device, latent_dim, n_samples=12)
+def save_samples(generator, device, path, latent_dim=128, fixed_noise=None):
+    n_samples = fixed_noise.size(0) if fixed_noise is not None else 12
+    samples = generate_samples(generator, device, latent_dim, n_samples=n_samples, fixed_noise=fixed_noise)
     save_image(samples, path, nrow=4, normalize=True)
 
 

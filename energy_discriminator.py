@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
 
 class EnergyDiscriminator(nn.Module):
     """Deep Energy Model that returns a scalar energy per sample.
@@ -16,7 +17,7 @@ class EnergyDiscriminator(nn.Module):
         in_channels=3,
         img_size=64,
         num_experts=1024,
-        use_batchnorm=True,
+        use_spectral_norm=False,
         activation="leakyrelu",
         dropout=0.0,
     ):
@@ -45,8 +46,14 @@ class EnergyDiscriminator(nn.Module):
                 return nn.SiLU(inplace=True)
             raise ValueError(f"Unsupported energy activation: {activation}")
 
+        def maybe_apply_spectral_norm(layer):
+            """Apply spectral norm if enabled."""
+            if use_spectral_norm:
+                return spectral_norm(layer)
+            return layer
+
         # First conv (no batchnorm) - Kernel size 5, Stride 2, Padding 2
-        layers.append(nn.Conv2d(in_channels, channels[0], kernel_size=5, stride=2, padding=2))
+        layers.append(maybe_apply_spectral_norm(nn.Conv2d(in_channels, channels[0], kernel_size=5, stride=2, padding=2)))
         layers.append(get_activation())
         if dropout and dropout > 0:
             layers.append(nn.Dropout2d(dropout))
@@ -55,9 +62,7 @@ class EnergyDiscriminator(nn.Module):
 
         # Remaining convolutional layers
         for ch in channels[1:]:
-            layers.append(nn.Conv2d(in_ch, ch, kernel_size=5, stride=2, padding=2))
-            if use_batchnorm:
-                layers.append(nn.BatchNorm2d(ch))
+            layers.append(maybe_apply_spectral_norm(nn.Conv2d(in_ch, ch, kernel_size=5, stride=2, padding=2)))
             layers.append(get_activation())
             if dropout and dropout > 0:
                 layers.append(nn.Dropout2d(dropout))
@@ -72,7 +77,7 @@ class EnergyDiscriminator(nn.Module):
         self.flatten = nn.Flatten()
         
         # Linear projection to create the 'experts'
-        self.fc_experts = nn.Linear(in_ch * out_spatial * out_spatial, num_experts)
+        self.fc_experts = maybe_apply_spectral_norm(nn.Linear(in_ch * out_spatial * out_spatial, num_experts))
         self.fc_dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x):

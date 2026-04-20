@@ -1,4 +1,4 @@
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 import torch
 import torch.nn as nn
 from torch import autograd
@@ -8,6 +8,17 @@ from energy_discriminator import EnergyDiscriminator
 
 
 def gradient_penalty(energy_net, real, fake, device, gp_lambda=10.0):
+    # real_ratio can produce different real/fake subset sizes.
+    # Match counts before interpolation for stable GP computation.
+    if real.size(0) != fake.size(0):
+        match_n = min(real.size(0), fake.size(0))
+        if real.size(0) > match_n:
+            real_idx = torch.randperm(real.size(0), device=real.device)[:match_n]
+            real = real[real_idx]
+        if fake.size(0) > match_n:
+            fake_idx = torch.randperm(fake.size(0), device=fake.device)[:match_n]
+            fake = fake[fake_idx]
+
     batch_size = real.size(0)
     eps = torch.rand(batch_size, 1, 1, 1, device=device)
     x_hat = eps * real + (1 - eps) * fake
@@ -30,14 +41,14 @@ def build_gan_models(config, device):
     generator = Generator(
         latent_dim=config.get("latent_dim", 128),
         channels=config.get("g_channels", [512, 256, 128, 64]),
-        use_batchnorm=config.get("use_batchnorm", True),
+        use_batchnorm_gen=config.get("use_batchnorm_gen", False),
         activation=config.get("g_activation", config.get("activation", "relu")),
         dropout=config.get("g_dropout", config.get("dropout", 0.0)),
     ).to(device)
 
     energy_net = EnergyDiscriminator(
         channels=config.get("d_channels", [64, 128, 256, 512]),
-        use_batchnorm=config.get("use_batchnorm", True),
+        use_spectral_norm=config.get("use_spectral_norm", False),
         activation=config.get("e_activation", "leakyrelu"),
         dropout=config.get("e_dropout", config.get("dropout", 0.0)),
     ).to(device)
@@ -92,10 +103,24 @@ def train_gan_with_epoch_callback(
     G_losses = []
     E_losses = []
 
+    def _grad_norm(model):
+        total_norm_sq = 0.0
+        for parameter in model.parameters():
+            if parameter.grad is None:
+                continue
+            param_norm = parameter.grad.detach().data.norm(2).item()
+            total_norm_sq += param_norm * param_norm
+        return total_norm_sq ** 0.5
+
     total_epochs = start_epoch + epochs
 
     for epoch in range(start_epoch, total_epochs):
         loop = tqdm(dataloader, desc=f"Epoch [{epoch+1}/{total_epochs}]")
+
+        epoch_g_grad_norm_sum = 0.0
+        epoch_e_grad_norm_sum = 0.0
+        epoch_g_grad_norm_steps = 0
+        epoch_e_grad_norm_steps = 0
 
         for real_imgs, _ in loop:
             real_imgs = real_imgs.to(device)
@@ -121,6 +146,8 @@ def train_gan_with_epoch_callback(
 
                 opt_E.zero_grad()
                 loss_E.backward()
+                epoch_e_grad_norm_sum += _grad_norm(energy_net)
+                epoch_e_grad_norm_steps += 1
                 opt_E.step()
 
             # --- Update generator g_steps times ---
@@ -131,6 +158,8 @@ def train_gan_with_epoch_callback(
 
                 opt_G.zero_grad()
                 loss_G.backward()
+                epoch_g_grad_norm_sum += _grad_norm(generator)
+                epoch_g_grad_norm_steps += 1
                 opt_G.step()
 
             loop.set_postfix({
@@ -140,6 +169,8 @@ def train_gan_with_epoch_callback(
 
         g_loss_epoch = float(loss_G.item())
         e_loss_epoch = float(loss_E.item())
+        g_grad_norm_epoch = epoch_g_grad_norm_sum / max(1, epoch_g_grad_norm_steps)
+        e_grad_norm_epoch = epoch_e_grad_norm_sum / max(1, epoch_e_grad_norm_steps)
         G_losses.append(g_loss_epoch)
         E_losses.append(e_loss_epoch)
 
@@ -151,6 +182,8 @@ def train_gan_with_epoch_callback(
                     energy_net=energy_net,
                     g_loss=g_loss_epoch,
                     e_loss=e_loss_epoch,
+                    g_grad_norm=g_grad_norm_epoch,
+                    e_grad_norm=e_grad_norm_epoch,
                     opt_G_state_dict=opt_G.state_dict(),
                     opt_E_state_dict=opt_E.state_dict(),
                 )
@@ -273,14 +306,14 @@ def train_gan_ebm_full(config, device, train_loader, epochs=10):
     G = Generator(
         latent_dim=config.get("latent_dim", 128),
         channels=config.get("g_channels", [512, 256, 128, 64]),
-        use_batchnorm=config.get("use_batchnorm", True),
+        use_batchnorm_gen=config.get("use_batchnorm_gen", False),
         activation=config.get("g_activation", config.get("activation", "relu")),
         dropout=config.get("g_dropout", config.get("dropout", 0.0)),
     ).to(device)
 
     E = EnergyDiscriminator(
         channels=config.get("d_channels", [64, 128, 256, 512]),
-        use_batchnorm=config.get("use_batchnorm", True),
+        use_spectral_norm=config.get("use_spectral_norm", False),
         activation=config.get("e_activation", "leakyrelu"),
         dropout=config.get("e_dropout", config.get("dropout", 0.0)),
     ).to(device)

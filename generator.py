@@ -8,7 +8,7 @@ class Generator(nn.Module):
         latent_dim=128,
         channels=[512, 256, 128, 64],
         out_channels=3,
-        use_batchnorm=True,
+        use_batchnorm_gen=False,
         activation="relu",
         dropout=0.0,
     ):
@@ -32,7 +32,7 @@ class Generator(nn.Module):
 
         # First layer (no stride)
         layers.append(nn.ConvTranspose2d(latent_dim, channels[0], 4, 1, 0))
-        if use_batchnorm:
+        if use_batchnorm_gen:
             layers.append(nn.BatchNorm2d(channels[0]))
         layers.append(get_activation())
         if dropout and dropout > 0:
@@ -42,7 +42,7 @@ class Generator(nn.Module):
         in_ch = channels[0]
         for ch in channels[1:]:
             layers.append(nn.ConvTranspose2d(in_ch, ch, 4, 2, 1))
-            if use_batchnorm:
+            if use_batchnorm_gen:
                 layers.append(nn.BatchNorm2d(ch))
             layers.append(get_activation())
             if dropout and dropout > 0:
