@@ -1,14 +1,12 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 
 class EnergyDiscriminator(nn.Module):
-    """Deep Energy Model that returns a scalar energy per sample.
-    
-    Implements Equation 11 from "Deep Directed Generative Models 
-    with Energy-Based Probability Estimation":
-    E(x) = (1/sigma^2)*x^T*x - b^T*x - sum(log(1 + exp(W_i^T*f(x) + b_i)))
+    """Autoencoder energy model that returns scalar reconstruction energy.
+
+    Energy is computed per sample as the mean squared reconstruction error:
+        E(x) = mean((x - recon(x))^2)
     """
 
     def __init__(
@@ -25,12 +23,10 @@ class EnergyDiscriminator(nn.Module):
 
         self.img_size = img_size
         self.in_channels = in_channels
-        
-        # Parameters for the raw input energy terms: (1/sigma^2)*x^T*x and b^T*x
-        self.sigma_sq = nn.Parameter(torch.tensor(1.0))
-        self.b = nn.Parameter(torch.zeros(in_channels * img_size * img_size))
+        self.bottleneck_dim = num_experts
 
-        layers = []
+        if not channels:
+            raise ValueError("`channels` must contain at least one channel size.")
 
         def get_activation():
             act = str(activation).lower()
@@ -52,63 +48,99 @@ class EnergyDiscriminator(nn.Module):
                 return spectral_norm(layer)
             return layer
 
-        # First conv (no batchnorm) - Kernel size 5, Stride 2, Padding 2
-        layers.append(maybe_apply_spectral_norm(nn.Conv2d(in_channels, channels[0], kernel_size=5, stride=2, padding=2)))
-        layers.append(get_activation())
-        if dropout and dropout > 0:
-            layers.append(nn.Dropout2d(dropout))
-
-        in_ch = channels[0]
-
-        # Remaining convolutional layers
-        for ch in channels[1:]:
-            layers.append(maybe_apply_spectral_norm(nn.Conv2d(in_ch, ch, kernel_size=5, stride=2, padding=2)))
-            layers.append(get_activation())
+        encoder_layers = []
+        in_ch = in_channels
+        for ch in channels:
+            encoder_layers.append(
+                maybe_apply_spectral_norm(
+                    nn.Conv2d(in_ch, ch, kernel_size=5, stride=2, padding=2)
+                )
+            )
+            encoder_layers.append(get_activation())
             if dropout and dropout > 0:
-                layers.append(nn.Dropout2d(dropout))
+                encoder_layers.append(nn.Dropout2d(dropout))
             in_ch = ch
+        self.encoder = nn.Sequential(*encoder_layers)
 
-        # Feature extractor f_varphi(x)
-        self.features = nn.Sequential(*layers)
-
-        # Calculate spatial dimensions after convolutions (4 layers of stride 2 -> img_size / 16)
         out_spatial = img_size // (2 ** len(channels))
-        
-        self.flatten = nn.Flatten()
-        
-        # Linear projection to create the 'experts'
-        self.fc_experts = maybe_apply_spectral_norm(nn.Linear(in_ch * out_spatial * out_spatial, num_experts))
-        self.fc_dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
+        if out_spatial < 1:
+            raise ValueError("`img_size` is too small for the number of downsampling layers.")
+
+        self.feature_channels = in_ch
+        self.feature_spatial = out_spatial
+        self.flat_dim = in_ch * out_spatial * out_spatial
+
+        self.to_bottleneck = maybe_apply_spectral_norm(
+            nn.Linear(self.flat_dim, self.bottleneck_dim)
+        )
+        self.from_bottleneck = maybe_apply_spectral_norm(
+            nn.Linear(self.bottleneck_dim, self.flat_dim)
+        )
+
+        decoder_layers = []
+        decoder_channels = list(channels[::-1])
+        for idx, ch in enumerate(decoder_channels[1:]):
+            decoder_layers.append(
+                maybe_apply_spectral_norm(
+                    nn.ConvTranspose2d(
+                        decoder_channels[idx],
+                        ch,
+                        kernel_size=5,
+                        stride=2,
+                        padding=2,
+                        output_padding=1,
+                    )
+                )
+            )
+            decoder_layers.append(get_activation())
+            if dropout and dropout > 0:
+                decoder_layers.append(nn.Dropout2d(dropout))
+
+        decoder_layers.append(
+            maybe_apply_spectral_norm(
+                nn.ConvTranspose2d(
+                    decoder_channels[-1],
+                    in_channels,
+                    kernel_size=5,
+                    stride=2,
+                    padding=2,
+                    output_padding=1,
+                )
+            )
+        )
+        decoder_layers.append(nn.Tanh())
+        self.decoder = nn.Sequential(*decoder_layers)
+
+        self.bottleneck_dropout = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x):
         """Return scalar energy values of shape (N,)."""
-        
-        # 1. Calculate energy terms operating directly on the raw input x
-        x_flat = x.view(x.size(0), -1)
-        
-        # (1/sigma^2) * x^T * x
-        x_sq_sum = torch.sum(x_flat ** 2, dim=1)
-        term1 = (1.0 / self.sigma_sq) * x_sq_sum
-        
-        # b^T * x
-        term2 = torch.matmul(x_flat, self.b)
-        
-        # 2. Calculate the energy term from the deep feature experts
-        f = self.features(x)
-        f = self.flatten(f)
-        f = self.fc_dropout(f)
-        
-        # Calculate W_i^T * f_varphi(x) + b_i
-        expert_activations = self.fc_experts(f)
-        
-        # The sum of softplus represents: sum(log(1 + exp(activations)))
-        term3 = torch.sum(F.softplus(expert_activations), dim=1)
-        
-        # 3. Combine to form the final Product of Experts energy equation
-        energy = term1 - term2 - term3
-        
-        return energy
+        recon = self.reconstruct(x)
+        return (x - recon).pow(2).flatten(1).mean(dim=1)
 
     def features_before_fc(self, x):
-        """Return feature map before the final linear layer."""
-        return self.features(x)
+        """Return encoder bottleneck representation used for metric calculations."""
+        return self.encode(x)
+
+    def encode(self, x):
+        """Return bottleneck representation S from the encoder."""
+        features = self.encoder(x)
+        flat = features.flatten(1)
+        bottleneck = self.to_bottleneck(flat)
+        bottleneck = self.bottleneck_dropout(bottleneck)
+        return bottleneck
+
+    def decode(self, bottleneck):
+        """Decode bottleneck vector back to image space."""
+        flat = self.from_bottleneck(bottleneck)
+        features = flat.view(
+            bottleneck.size(0),
+            self.feature_channels,
+            self.feature_spatial,
+            self.feature_spatial,
+        )
+        return self.decoder(features)
+
+    def reconstruct(self, x):
+        """Autoencoder reconstruction used for energy computation."""
+        return self.decode(self.encode(x))
